@@ -28,7 +28,7 @@ class MainActivity : Activity() {
             val device = if (Build.VERSION.SDK_INT >= 33)
                 intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             else @Suppress("DEPRECATION") (intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE))
-            if (device?.address == selected?.address) showRemoteServices(device)
+            device?.let { found -> if (found.address == selected?.address) showRemoteServices(found) }
         }
     }
 
