@@ -10,25 +10,31 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.widget.*
 
 class MainActivity : Activity() {
     private val adapter: BluetoothAdapter? by lazy { BluetoothAdapter.getDefaultAdapter() }
+    private var bridge: BluetoothPhoneBridge? = null
     private lateinit var status: TextView
-    private lateinit var remoteStatus: TextView
-    private lateinit var hfpStatus: TextView
-    private lateinit var pbapStatus: TextView
     private lateinit var selectedLabel: TextView
-    private lateinit var details: TextView
+    private lateinit var hfpLabel: TextView
+    private lateinit var pbapLabel: TextView
+    private lateinit var callState: TextView
+    private lateinit var number: EditText
+    private lateinit var log: TextView
+    private lateinit var root: LinearLayout
     private var selected: BluetoothDevice? = null
+    private var page = "home"
+    private var largeText = false
 
     private val uuidReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != BluetoothDevice.ACTION_UUID) return
-            val device = if (Build.VERSION.SDK_INT >= 33)
+            val d = if (Build.VERSION.SDK_INT >= 33)
                 intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             else @Suppress("DEPRECATION") (intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE))
-            device?.let { found -> if (found.address == selected?.address) showRemoteServices(found) }
+            d?.let { if (it.address == selected?.address) showPhoneServices(it) }
         }
     }
 
@@ -37,155 +43,179 @@ class MainActivity : Activity() {
         val filter = IntentFilter(BluetoothDevice.ACTION_UUID)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(uuidReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         else @Suppress("DEPRECATION") registerReceiver(uuidReceiver, filter)
-        buildUi()
+        bridge = BluetoothPhoneBridge(this) { runOnUiThread { updateProfileStatus() } }
+        buildShell()
+        requestBluetoothPermission()
         refresh()
-        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
-            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 71)
     }
 
-    private fun buildUi() {
-        val scroll = ScrollView(this)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(22, 25, 22, 26)
-            setBackgroundColor(0xFF07111F.toInt())
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun text(s: String, size: Float = 15f, color: Int = 0xFFEAF6FF.toInt()) =
+        TextView(this).apply { text=s; textSize=if (largeText) size+3 else size; setTextColor(color); gravity=Gravity.CENTER; setPadding(dp(8),dp(9),dp(8),dp(9)) }
+    private fun button(s: String, action: () -> Unit) = Button(this).apply {
+        text=s; textSize=14f; isAllCaps=false
+        setTextColor(0xFF06121F.toInt())
+        backgroundTintList=android.content.res.ColorStateList.valueOf(0xFF42D9F5.toInt())
+        setOnClickListener { action() }
+    }
+    private fun card(): LinearLayout = LinearLayout(this).apply {
+        orientation=LinearLayout.VERTICAL; setPadding(dp(12),dp(10),dp(12),dp(10))
+        setBackgroundColor(0xFF12263A.toInt())
+        val p=LinearLayout.LayoutParams(-1,-2); p.setMargins(0,dp(6),0,dp(6)); layoutParams=p
+    }
+    private fun section(parent: LinearLayout, title: String) { parent.addView(text(title,17f,0xFF48DDF5.toInt())) }
+    private fun buildShell() {
+        val outer=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setBackgroundColor(0xFF07111F.toInt()) }
+        val header=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(8)); setBackgroundColor(0xFF0B1C2D.toInt()) }
+        header.addView(text("NEXUSLINK",25f,0xFF48DDF5.toInt()))
+        header.addView(text("SMART PHONE LINK  •  OFFLINE",10f,0xFF8BAFC5.toInt()))
+        status=text("מאתחל Bluetooth…",13f,0xFF77E5AA.toInt()); header.addView(status)
+        outer.addView(header)
+        val nav=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER }
+        listOf("ראשי","חייגן","שיחה","הגדרות").forEachIndexed { i, label ->
+            nav.addView(Button(this).apply {
+                text=label; textSize=11f; isAllCaps=false; setTextColor(0xFFEAF6FF.toInt())
+                backgroundTintList=android.content.res.ColorStateList.valueOf(0xFF19354D.toInt())
+                setOnClickListener { showPage(listOf("home","dial","call","settings")[i]) }
+            }, LinearLayout.LayoutParams(0,-2,1f))
         }
-        fun label(text: String, size: Float, color: Int = 0xFFEAF6FF.toInt()) =
-            TextView(this).apply { this.text = text; textSize = size; setTextColor(color); gravity = Gravity.CENTER; setPadding(8, 9, 8, 9) }
-        fun section(text: String) { root.addView(label(text, 17f, 0xFF45D9FF.toInt())) }
-        fun button(text: String, action: () -> Unit) {
-            root.addView(Button(this).apply {
-                this.text = text; setTextColor(0xFF07111F.toInt())
-                backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF45D9FF.toInt())
-                setOnClickListener { action() }
-            })
-        }
-        root.addView(label("NEXUSLINK", 30f, 0xFF45D9FF.toInt()))
-        root.addView(label("OFFLINE • SIMPLE PHONE • ANDROID 13", 11f, 0xFF91AFC5.toInt()))
-        status = label("בודק Bluetooth…", 15f, 0xFF75E4A5.toInt())
-        root.addView(status)
-        section("מבנה המערכת")
-        root.addView(label("האפליקציה מותקנת בנגן בלבד. הטלפון הפשוט אינו מתקין אפליקציה ואינו זקוק לאינטרנט או לנתונים סלולריים. ה-SIM והשיחות נשארים בטלפון.", 14f))
-        button("פתח הגדרות Bluetooth") {
-            try { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
-            catch (e: Exception) { status.text = "לא ניתן לפתוח הגדרות: ${e.message}" }
-        }
-        section("בחירת הטלפון")
-        selectedLabel = label("לא נבחר טלפון מצומד", 14f, 0xFFB9CAD8.toInt()); root.addView(selectedLabel)
-        remoteStatus = label("HFP Audio Gateway: טרם נבדק\nPBAP Phone Book Server: טרם נבדק", 14f); root.addView(remoteStatus)
-        button("בחר טלפון מצומד ובדוק שירותים") { choosePhone() }
-        section("בדיקת יכולות הנגן")
-        hfpStatus = label("HFP Client (דיבורית): טרם נבדק", 14f); root.addView(hfpStatus)
-        pbapStatus = label("PBAP Client (אנשי קשר): טרם נבדק", 14f); root.addView(pbapStatus)
-        button("בדוק שוב שירותי HFP / PBAP") { probeClientProfiles() }
-        section("אבחון")
-        details = label("נדרש HFP Client בקושחת הנגן כדי לנהל שיחות דרך הטלפון. נדרש PBAP Client כדי לייבא אנשי קשר ויומן שיחות. חיבור Bluetooth למוזיקה בלבד אינו מספיק.", 13f, 0xFFB9CAD8.toInt())
-        root.addView(details)
-        root.addView(label("אין הרשאת INTERNET באפליקציה • NexusLink 0.2", 11f, 0xFF69859A.toInt()))
-        scroll.addView(root); setContentView(scroll)
+        outer.addView(nav)
+        val scroll=ScrollView(this)
+        root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(10),dp(16),dp(22)) }
+        scroll.addView(root); outer.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        setContentView(outer)
+        showPage("home")
     }
 
-    private fun hasPermission() = Build.VERSION.SDK_INT < 31 ||
-        checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    private fun showPage(which: String) {
+        page=which; root.removeAllViews()
+        when(which) {
+            "home" -> homePage()
+            "dial" -> dialPage()
+            "call" -> callPage()
+            else -> settingsPage()
+        }
+    }
 
-    private fun refresh() {
-        val a = adapter
-        if (a == null) { status.text = "Bluetooth אינו נתמך במכשיר"; return }
-        if (!hasPermission()) { status.text = "יש לאשר הרשאת Bluetooth"; return }
-        status.text = if (a.isEnabled) "Bluetooth פעיל • מצב אופליין" else "Bluetooth כבוי"
-        probeClientProfiles()
+    private fun homePage() {
+        root.addView(text("מרכז שליטה",23f))
+        root.addView(text("חיבור מקומי בין הנגן לטלפון פשוט. אין צורך באפליקציה בטלפון או בחיבור אינטרנט.",13f,0xFFB6CADA.toInt()))
+        val c=card(); root.addView(c)
+        c.addView(text("הטלפון המחובר",17f,0xFF49DDF5.toInt()))
+        selectedLabel=text("לא נבחר טלפון",15f); c.addView(selectedLabel)
+        c.addView(button("בחר טלפון מצומד") { choosePhone() })
+        c.addView(button("פתח הגדרות Bluetooth") { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) })
+        val p=card(); root.addView(p)
+        p.addView(text("יכולות מערכת",17f,0xFF49DDF5.toInt()))
+        hfpLabel=text("HFP Client: בבדיקה"); p.addView(hfpLabel)
+        pbapLabel=text("PBAP Client: בבדיקה"); p.addView(pbapLabel)
+        p.addView(button("בדוק שירותים מחדש") { bridge?.start(); updateProfileStatus() })
+        val q=card(); root.addView(q)
+        q.addView(text("פעולות מהירות",17f,0xFF49DDF5.toInt()))
+        q.addView(button("פתח חייגן") { showPage("dial") })
+        q.addView(button("מסך שיחה") { showPage("call") })
+        q.addView(button("אנשי קשר ויומן") { showPage("settings"); log.text="אנשי קשר ויומן מרחוק דורשים PBAP Client פעיל בקושחת הנגן. מצב השירות מוצג למעלה." })
+    }
+
+    private fun dialPage() {
+        root.addView(text("חייגן",24f))
+        root.addView(text("החיוג יישלח לטלפון המצומד רק אם HFP Client זמין ומורשה.",13f,0xFFB6CADA.toInt()))
+        number=EditText(this).apply { hint="הזן מספר טלפון"; textSize=25f; setTextColor(0xFFFFFFFF.toInt()); setHintTextColor(0xFF7892A8.toInt()); gravity=Gravity.CENTER; inputType=3; setPadding(dp(12),dp(16),dp(12),dp(16)); setBackgroundColor(0xFF142A40.toInt()) }
+        root.addView(number)
+        val grid= listOf(listOf("1","2","3"),listOf("4","5","6"),listOf("7","8","9"),listOf("*","0","#"))
+        grid.forEach { row ->
+            val line=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+            row.forEach { digit -> line.addView(button(digit) { number.append(digit) },LinearLayout.LayoutParams(0,dp(58),1f)) }
+            root.addView(line)
+        }
+        root.addView(button("⌫ מחק") { val s=number.text.toString(); if(s.isNotEmpty()) number.setText(s.dropLast(1)) })
+        root.addView(button("התקשר דרך Bluetooth") {
+            val n=number.text.toString().trim()
+            if(n.isBlank()) toast("הזן מספר")
+            else if(bridge?.dial(n)==true) toast("פקודת החיוג נשלחה")
+            else toast("החיוג אינו זמין: ${bridge?.lastError ?: "HFP Client לא מחובר"}")
+        })
+        root.addView(button("מסך שיחה") { showPage("call") })
+    }
+
+    private fun callPage() {
+        root.addView(text("מסך שיחה",24f))
+        callState=text("אין שיחה פעילה",18f,0xFF70E3A5.toInt()); root.addView(callState)
+        root.addView(text("מצב שיחה נקרא משירות HFP Client של הנגן, אם הוא זמין.",13f,0xFFB6CADA.toInt()))
+        root.addView(button("ענה לשיחה") { actionResult("מענה", bridge?.answer()==true) })
+        root.addView(button("דחה שיחה") { actionResult("דחייה", bridge?.reject()==true) })
+        root.addView(button("נתק שיחה") { actionResult("ניתוק", bridge?.hangUp()==true) })
+        root.addView(button("חבר שמע Bluetooth") { actionResult("חיבור שמע", bridge?.connectAudio()==true) })
+        root.addView(button("נתק שמע Bluetooth") { actionResult("ניתוק שמע", bridge?.disconnectAudio()==true) })
+        section(root,"מקשי DTMF")
+        val keys=listOf("1","2","3","4","5","6","7","8","9","*","0","#")
+        keys.chunked(3).forEach { row ->
+            val line=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+            row.forEach { k -> line.addView(button(k) { actionResult("DTMF $k",bridge?.sendDtmf(k[0])==true) },LinearLayout.LayoutParams(0,dp(52),1f)) }
+            root.addView(line)
+        }
+        root.addView(button("רענן מצב שיחה") { refreshCallState() })
+    }
+
+    private fun settingsPage() {
+        root.addView(text("הגדרות",24f))
+        root.addView(text("התאמה לנגן Camera Pro 3 • Android 13",14f,0xFFB6CADA.toInt()))
+        root.addView(button(if(largeText) "בטל טקסט גדול" else "הפעל טקסט גדול") { largeText=!largeText; showPage("settings") })
+        root.addView(button("בדיקת Bluetooth") { refresh(); toast("הבדיקה עודכנה") })
+        root.addView(button("ניהול צימודים") { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) })
+        root.addView(button("מידע והרשאות אפליקציה") { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(android.net.Uri.parse("package:$packageName"))) })
+        log=text("האפליקציה אינה דורשת הרשאת INTERNET. הטלפון הפשוט אינו מתקין אפליקציה.\n\nHFP Client ו-PBAP Client הם שירותי מערכת/יצרן; אם אינם זמינים בקושחה, אפליקציה רגילה אינה יכולה להוסיף אותם בעצמה.\n\nהקלטת שיחה אינה מופעלת בגרסה זו: התמיכה תלויה בקושחה, בחוק ובמדיניות מערכת.",13f,0xFFB6CADA.toInt())
+        root.addView(log)
+        root.addView(button("רישום תוצאות בדיקה") { log.text="HFP: ${bridge?.hfpAvailable}\nPBAP: ${bridge?.pbapAvailable}\nשגיאה אחרונה: ${bridge?.lastError ?: "אין"}" })
     }
 
     private fun choosePhone() {
-        if (!hasPermission()) {
-            if (Build.VERSION.SDK_INT >= 31) requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 71)
-            return
-        }
-        val devices = try { adapter?.bondedDevices?.toList().orEmpty() } catch (_: Exception) { emptyList() }
-        if (devices.isEmpty()) { status.text = "אין טלפונים מצומדים. בצע צימוד בהגדרות Android."; return }
-        val names = devices.map { try { "${it.name ?: "Bluetooth"} • ${it.address}" } catch (_: Exception) { it.address } }
-        AlertDialog.Builder(this).setTitle("בחר טלפון פשוט").setItems(names.toTypedArray()) { _, index ->
-            selected = devices[index]
-            selectedLabel.text = names[index]
-            remoteStatus.text = "מבקש מידע שירותים מהטלפון…"
+        if(!hasPermission()) { requestBluetoothPermission(); return }
+        val devices=try { adapter?.bondedDevices?.toList().orEmpty() } catch(_:Exception){ emptyList() }
+        if(devices.isEmpty()) { toast("אין מכשירים מצומדים. בצע צימוד בהגדרות Bluetooth."); return }
+        val labels=devices.map { try { "${it.name ?: "Bluetooth"} • ${it.address}" } catch(_:Exception){it.address} }
+        AlertDialog.Builder(this).setTitle("בחר טלפון פשוט").setItems(labels.toTypedArray()) { _, i ->
+            selected=devices[i]; selectedLabel.text=labels[i]
             try {
-                showRemoteServices(devices[index])
-                devices[index].fetchUuidsWithSdp()
-            } catch (e: Exception) { remoteStatus.text = "בדיקת שירותי Bluetooth נכשלה: ${e.message}" }
+                devices[i].fetchUuidsWithSdp()
+                val hfp=bridge?.connect(devices[i])==true
+                val pbap=bridge?.connectPhoneBook(devices[i])==true
+                toast("נשלחו בקשות חיבור. HFP=$hfp, PBAP=$pbap")
+                updateProfileStatus()
+            } catch(e:Exception) { toast("שגיאת Bluetooth: ${e.message}") }
         }.show()
     }
 
-    private fun showRemoteServices(device: BluetoothDevice) {
-        if (!hasPermission()) return
-        val uuids = try { device.uuids?.map { it.uuid.toString().lowercase() }.orEmpty() } catch (_: Exception) { emptyList() }
-        val hfpAg = uuids.any { it.startsWith("0000111f-") }
-        val pbapPse = uuids.any { it.startsWith("0000112f-") }
-        runOnUiThread {
-            remoteStatus.text = "HFP Audio Gateway בטלפון: ${if (hfpAg) "נמצא" else "לא נמצא / לא פורסם"}\nPBAP Phone Book Server בטלפון: ${if (pbapPse) "נמצא" else "לא נמצא / לא פורסם"}"
-            details.text = if (uuids.isEmpty())
-                "הטלפון לא החזיר UUID ב-SDP. ייתכן שהמידע אינו מפורסם או שיש לנסות שוב לאחר צימוד."
-            else
-                "נמצאו ${uuids.size} שירותי Bluetooth בטלפון. זה אינו מוכיח שהנגן עצמו תומך בתפקיד HFP Client."
-        }
+    private fun showPhoneServices(d: BluetoothDevice) {
+        val uuids=try { d.uuids?.map { it.uuid.toString().lowercase() }.orEmpty() } catch(_:Exception){emptyList()}
+        val hfp=uuids.any { it.startsWith("0000111f-") }
+        val pbap=uuids.any { it.startsWith("0000112f-") }
+        toast("בטלפון: HFP AG=${if(hfp) "כן" else "לא פורסם"}, PBAP PSE=${if(pbap) "כן" else "לא פורסם"}")
     }
 
-    // AOSP profile IDs: HEADSET_CLIENT=16, PBAP_CLIENT=17. These are not public SDK APIs.
-    // This is a best-effort availability probe only; call control requires OEM/system privileges.
-    private fun probeClientProfiles() {
-        if (!hasPermission()) return
-        val a = adapter ?: return
-        if (!a.isEnabled) {
-            hfpStatus.text = "HFP Client: Bluetooth כבוי"
-            pbapStatus.text = "PBAP Client: Bluetooth כבוי"
-            return
-        }
-        hfpStatus.text = "HFP Client: בודק שירות מערכת…"
-        pbapStatus.text = "PBAP Client: בודק שירות מערכת…"
-        try {
-            a.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
-                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                    val active = try { proxy.connectedDevices.isNotEmpty() } catch (_: Exception) { false }
-                    if (profile == 16) runOnUiThread {
-                        hfpStatus.text = if (active) "HFP Client: שירות זמין ויש חיבור" else "HFP Client: שירות זמין, טרם התחבר"
-                    }
-                    try { a.closeProfileProxy(profile, proxy) } catch (_: Exception) {}
-                }
-                override fun onServiceDisconnected(profile: Int) {
-                    if (profile == 16) runOnUiThread { hfpStatus.text = "HFP Client: שירות לא זמין" }
-                }
-            }, 16)
-        } catch (_: SecurityException) {
-            hfpStatus.text = "HFP Client: נדרשת הרשאת יצרן/מערכת"
-        } catch (e: Exception) {
-            hfpStatus.text = "HFP Client: לא זמין (${e.message})"
-        }
-        try {
-            a.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
-                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                    val active = try { proxy.connectedDevices.isNotEmpty() } catch (_: Exception) { false }
-                    runOnUiThread {
-                        pbapStatus.text = if (active) "PBAP Client: שירות זמין ויש חיבור" else "PBAP Client: שירות זמין, טרם התחבר"
-                    }
-                    try { a.closeProfileProxy(profile, proxy) } catch (_: Exception) {}
-                }
-                override fun onServiceDisconnected(profile: Int) {
-                    runOnUiThread { pbapStatus.text = "PBAP Client: שירות לא זמין" }
-                }
-            }, 17)
-        } catch (_: SecurityException) {
-            pbapStatus.text = "PBAP Client: נדרשת הרשאת יצרן/מערכת"
-        } catch (e: Exception) {
-            pbapStatus.text = "PBAP Client: לא זמין (${e.message})"
-        }
+    private fun updateProfileStatus() {
+        hfpLabel.text="HFP Client בנגן: ${if(bridge?.hfpAvailable==true) "שירות נגיש" else "לא נגיש / חסום בקושחה"}"
+        pbapLabel.text="PBAP Client בנגן: ${if(bridge?.pbapAvailable==true) "שירות נגיש" else "לא נגיש / חסום בקושחה"}"
+        status.text=if(adapter?.isEnabled==true) "Bluetooth פעיל • עבודה מקומית בלבד" else "Bluetooth כבוי"
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 71) refresh()
+    private fun refresh() {
+        if(adapter==null) { status.text="Bluetooth אינו נתמך"; return }
+        if(!hasPermission()) { status.text="נדרשת הרשאת Bluetooth"; return }
+        status.text=if(adapter?.isEnabled==true) "Bluetooth פעיל • ללא אינטרנט" else "Bluetooth כבוי"
+        bridge?.start()
     }
 
-    override fun onDestroy() {
-        try { unregisterReceiver(uuidReceiver) } catch (_: Exception) {}
-        super.onDestroy()
+    private fun refreshCallState() {
+        val calls=bridge?.currentCalls().orEmpty()
+        callState.text=if(calls.isEmpty()) "לא התקבל מידע על שיחה פעילה" else calls.joinToString("\n") { "${it.number} • ${it.stateLabel()}" }
     }
+    private fun actionResult(label:String, ok:Boolean) { toast(if(ok) "$label: הפקודה התקבלה" else "$label לא זמין: ${bridge?.lastError ?: "בדוק תמיכת HFP"}") }
+    private fun toast(s:String) = Toast.makeText(this,s,Toast.LENGTH_LONG).show()
+    private fun hasPermission() = Build.VERSION.SDK_INT<31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED
+    private fun requestBluetoothPermission() {
+        if(Build.VERSION.SDK_INT>=31 && !hasPermission()) requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT),71)
+    }
+    override fun onRequestPermissionsResult(r:Int,p:Array<out String>,g:IntArray) { super.onRequestPermissionsResult(r,p,g); if(r==71) refresh() }
+    override fun onDestroy() { try{unregisterReceiver(uuidReceiver)}catch(_:Exception){}; bridge?.close(); super.onDestroy() }
 }
